@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Page Not Found — Skint Labs</title>
+    <script>
+        // Fix URLs mangled by social media platforms (trailing punctuation, brackets, etc.)
+        (function() {
+            var path = window.location.pathname;
+            var cleaned = path.replace(/[.,;:!?\)\]\}>]+$/, '');
+            if (cleaned !== path) {
+                window.location.replace(cleaned + window.location.search + window.location.hash);
+                return;
+            }
+            // Also try stripping encoded chars like %5D (]) %29 ()) from the end
+            var decoded = decodeURIComponent(path);
+            var cleanedDecoded = decoded.replace(/[.,;:!?\)\]\}>]+$/, '');
+            if (cleanedDecoded !== decoded) {
+                window.location.replace(cleanedDecoded + window.location.search + window.location.hash);
+                return;
+            }
+        })();
+    </script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap" rel="stylesheet">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Inter', sans-serif; background: #0c0b0a; color: #ede8e0; min-height: 100vh; display: flex; align-items: center; justify-content: center; text-align: center; padding: 24px; }
+        .container { max-width: 480px; }
+        h1 { font-size: 4rem; font-weight: 800; background: linear-gradient(135deg, #e76f51, #f4a261, #e9c46a); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 16px; }
+        p { color: #b0a898; font-size: 1rem; margin-bottom: 32px; line-height: 1.6; }
+        a { display: inline-block; padding: 12px 32px; background: #264653; color: #ede8e0; text-decoration: none; border-radius: 100px; font-weight: 600; font-size: 0.9rem; transition: background 0.2s; }
+        a:hover { background: #2d5363; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>404</h1>
+        <p>This page doesn't exist. If you followed a link here, the URL may have been copied incorrectly.</p>
+        <a href="/">Back to Skint Labs</a>
+    </div>
+</body>
+</html>
