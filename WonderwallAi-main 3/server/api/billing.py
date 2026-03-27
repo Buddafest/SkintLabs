@@ -65,12 +65,7 @@ async def checkout(plan: str = "starter"):
         "cancel_url": "https://wonderwallai.skintlabs.ai/#pricing",
     }
 
-    settings = get_settings()
-    if settings.early_bird_coupon_id:
-        checkout_kwargs["discounts"] = [{"coupon": settings.early_bird_coupon_id}]
-        logger.info(f"Applied early bird coupon: {settings.early_bird_coupon_id}")
-    else:
-        checkout_kwargs["allow_promotion_codes"] = True
+    checkout_kwargs["allow_promotion_codes"] = True
 
     try:
         session = stripe_mod.checkout.Session.create(**checkout_kwargs)
