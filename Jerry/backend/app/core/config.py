@@ -88,6 +88,10 @@ class Settings(BaseSettings):
     # --- Sentry ---
     sentry_dsn: str = Field(default="", alias="SENTRY_DSN")
 
+    # --- Observability ---
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
+    log_format: str = Field(default="auto", alias="LOG_FORMAT")  # "json", "console", or "auto" (json in prod)
+
     # --- Validators ---
     @model_validator(mode="after")
     def validate_production_secrets(self) -> "Settings":

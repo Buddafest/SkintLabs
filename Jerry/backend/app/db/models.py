@@ -109,17 +109,6 @@ class Store(Base):
         String(255), nullable=True,
         comment="Stripe Subscription ID (sub_xxx)",
     )
-
-    # --- Shopify Native Billing ---
-    shopify_subscription_id: Mapped[Optional[str]] = mapped_column(
-        String(255), nullable=True,
-        comment="Shopify AppSubscription GID (gid://shopify/AppSubscription/...)",
-    )
-    shopify_plan: Mapped[Optional[str]] = mapped_column(
-        String(50), nullable=True,
-        comment="Shopify billing plan: base | growth | elite",
-    )
-
     jerry_plan: Mapped[str] = mapped_column(
         String(32), default="base",
         comment="Billing plan: base | elite",
@@ -260,5 +249,19 @@ class ChatInteraction(Base):
     products_shown: Mapped[int] = mapped_column(Integer, default=0)
     escalated: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    # --- Observability fields (added for intent logging) ---
+    turn_number: Mapped[int] = mapped_column(
+        Integer, default=0,
+        comment="Turn number within the conversation session",
+    )
+    latency_ms: Mapped[Optional[float]] = mapped_column(
+        Float, nullable=True,
+        comment="End-to-end pipeline latency for this message in milliseconds",
+    )
+    firewall_verdict: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True,
+        comment="Firewall outcome: allowed | blocked_inbound | blocked_outbound | redacted",
+    )
 
 

@@ -24,13 +24,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging & Observability
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
 logger = logging.getLogger("sunsetbot.conversation_engine")
+
+from app.core.observability import log_decision, log_llm_call, Timer
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -211,9 +209,26 @@ class IntentClassifier:
     }
     def classify(self, message: str, context: ConversationContext) -> str:
         msg = message.lower()
+        matched_intent = "general"
+        matched_keyword = None
         for intent, keywords in self.INTENT_KEYWORDS.items():
-            if any(k in msg for k in keywords): return intent
-        return "general"
+            for k in keywords:
+                if k in msg:
+                    matched_intent = intent
+                    matched_keyword = k
+                    break
+            if matched_keyword:
+                break
+
+        log_decision(
+            "intent_classification",
+            input_summary=message[:100],
+            options_considered=list(self.INTENT_KEYWORDS.keys()) + ["general"],
+            chosen=matched_intent,
+            reason=f"keyword_match:{matched_keyword}" if matched_keyword else "no_match:default_general",
+            confidence=1.0 if matched_keyword else 0.5,
+        )
+        return matched_intent
 
 class EntityExtractor:
     PATTERNS = {
@@ -241,17 +256,36 @@ class EntityExtractor:
         # Order
         order = re.search(self.PATTERNS["order_number"], msg)
         if order: entities["order_number"] = order.group(1)
+
+        if entities:
+            log_decision(
+                "entity_extraction",
+                input_summary=message[:100],
+                chosen=str(entities),
+                reason="regex_patterns",
+                metadata={"entity_count": len(entities)},
+            )
         return entities
 
 class EscalationHandler:
     PROFANITY = ["fuck", "shit", "damn", "asshole", "bitch"]
     def check(self, message: str, response: str, context: ConversationContext) -> Optional[EscalationTrigger]:
         msg = message.lower()
+        trigger = None
         if any(w in msg for w in self.PROFANITY):
-            return EscalationTrigger("customer_frustration", "high", "Profanity detected")
-        if "manager" in msg:
-            return EscalationTrigger("keyword_trigger", "high", "Asked for manager")
-        return None
+            trigger = EscalationTrigger("customer_frustration", "high", "Profanity detected")
+        elif "manager" in msg:
+            trigger = EscalationTrigger("keyword_trigger", "high", "Asked for manager")
+
+        if trigger:
+            log_decision(
+                "escalation",
+                input_summary=message[:100],
+                chosen="escalate",
+                reason=trigger.reason,
+                metadata={"priority": trigger.priority, "details": trigger.details},
+            )
+        return trigger
     def _keyword_sentiment(self, text: str) -> float:
         neg = ["disappointed", "bad", "useless", "broken"]
         pos = ["love", "great", "thanks", "happy"]
@@ -274,10 +308,27 @@ class ResponseGenerator:
         ]
         try:
             loop = asyncio.get_running_loop()
-            res = await loop.run_in_executor(None, lambda: self.client.chat.completions.create(model=self.model, messages=messages))
-            return res.choices[0].message.content
+            with Timer() as t:
+                res = await loop.run_in_executor(
+                    None,
+                    lambda: self.client.chat.completions.create(model=self.model, messages=messages),
+                )
+            completion_text = res.choices[0].message.content
+
+            # LLM call instrumentation — tokens, latency, summaries
+            usage = getattr(res, "usage", None)
+            log_llm_call(
+                model=self.model,
+                prompt_summary=f"{message[:80]}",
+                completion_summary=completion_text[:120] if completion_text else "",
+                tokens_in=getattr(usage, "prompt_tokens", 0) if usage else 0,
+                tokens_out=getattr(usage, "completion_tokens", 0) if usage else 0,
+                latency_ms=t.ms,
+            )
+            return completion_text
         except Exception as e:
             logger.error(f"Groq error: {e}")
+            log_llm_call(model=self.model, prompt_summary=message[:80], error=str(e), latency_ms=0)
             return "I'm having a slight technical glitch. One of our humans will be with you shortly!"
 
 # ============================================================================
@@ -406,6 +457,8 @@ class ConversationEngine:
                 entities=entities,
                 products_shown=len(products),
                 escalated=bool(escalation),
+                turn_number=context.message_count,
+                # latency_ms and firewall_verdict are logged at the main.py level
             )
 
         return EngineResponse(

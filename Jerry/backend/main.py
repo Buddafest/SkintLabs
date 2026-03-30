@@ -48,11 +48,20 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ---------------------------------------------------------------------------
-# Logging
+# Logging — structured observability (JSON in prod, console in dev)
 # ---------------------------------------------------------------------------
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+from app.core.observability import (
+    configure_logging, init_sentry, bind_context, clear_context,
+    log_decision, log_llm_call, Timer,
+)
+from app.core.config import get_settings as _get_settings_early
+
+_boot_settings = _get_settings_early()
+configure_logging(
+    service_name="jerry",
+    environment=_boot_settings.environment,
+    log_level=_boot_settings.log_level,
+    log_format=_boot_settings.log_format,
 )
 logger = logging.getLogger("sunsetbot.main")
 
@@ -111,6 +120,9 @@ _session_locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 async def lifespan(app: FastAPI):
     """Modern lifespan handler (replaces deprecated @app.on_event)."""
     global conversation_engine, product_intelligence, billing_service, analytics_service, firewall_engine
+
+    # --- STARTUP: Initialize Sentry ---
+    init_sentry(settings.sentry_dsn, settings.environment, "jerry")
 
     # --- STARTUP: Initialize Database ---
     try:
@@ -387,6 +399,10 @@ async def websocket_chat(
         _connections_by_ip[client_ip] += 1
     logger.info(f"WebSocket connected | session={session_id} | store={store_id} | ip={client_ip}")
 
+    # --- Bind observability context (all subsequent logs auto-include these) ---
+    bind_context(session_id=session_id, store_id=store_id, client_ip=client_ip)
+    turn_number = 0
+
     # --- Load or create context ---
     context = await conversation_engine.get_or_create_context(session_id, store_id)
 
@@ -443,10 +459,23 @@ async def websocket_chat(
                 })
                 continue
 
+            # --- Increment turn counter + bind to context ---
+            turn_number += 1
+            bind_context(turn_number=turn_number)
+
             # --- FIREWALL: Inbound scan ---
             if firewall_engine is not None:
                 try:
-                    verdict = await firewall_engine.scan_inbound(user_message)
+                    with Timer() as fw_in_t:
+                        verdict = await firewall_engine.scan_inbound(user_message)
+                    log_decision(
+                        "firewall_inbound",
+                        input_summary=user_message[:100],
+                        chosen="blocked" if not verdict.allowed else "allowed",
+                        reason=f"blocked_by={verdict.blocked_by}" if not verdict.allowed else "all_layers_passed",
+                        latency_ms=fw_in_t.ms,
+                        metadata={"violations": verdict.violations} if verdict.violations else None,
+                    )
                     if not verdict.allowed:
                         await websocket.send_json({
                             "type": "message",
@@ -456,10 +485,6 @@ async def websocket_chat(
                             "escalated": False,
                             "session_id": session_id,
                         })
-                        logger.warning(
-                            f"Firewall blocked | session={session_id} | "
-                            f"layer={verdict.blocked_by} | violations={verdict.violations}"
-                        )
                         continue
                 except Exception as e:
                     logger.error(f"Firewall inbound error (allowing): {e}")
@@ -474,10 +499,11 @@ async def websocket_chat(
             )
 
             try:
-                engine_response = await conversation_engine.process_message(
-                    message=user_message,
-                    context=context,
-                )
+                with Timer() as pipeline_t:
+                    engine_response = await conversation_engine.process_message(
+                        message=user_message,
+                        context=context,
+                    )
             except Exception as e:
                 logger.error(f"ConversationEngine error: {e}", exc_info=True)
                 await websocket.send_json({
@@ -490,14 +516,19 @@ async def websocket_chat(
             if firewall_engine is not None:
                 try:
                     canary = getattr(context, 'canary_token', "") or ""
-                    egress_verdict = await firewall_engine.scan_outbound(
-                        engine_response.text, canary
-                    )
-                    if egress_verdict.violations:
-                        logger.warning(
-                            f"Egress violations | session={session_id} | "
-                            f"violations={egress_verdict.violations}"
+                    with Timer() as fw_out_t:
+                        egress_verdict = await firewall_engine.scan_outbound(
+                            engine_response.text, canary
                         )
+                    fw_out_action = "allowed"
+                    if egress_verdict.violations:
+                        fw_out_action = "redacted"
+                    log_decision(
+                        "firewall_outbound",
+                        chosen=fw_out_action,
+                        latency_ms=fw_out_t.ms,
+                        metadata={"violations": egress_verdict.violations} if egress_verdict.violations else None,
+                    )
                     engine_response.text = egress_verdict.message
                 except Exception as e:
                     logger.error(f"Firewall outbound error (allowing): {e}")
@@ -506,11 +537,15 @@ async def websocket_chat(
             response_payload = _serialize_engine_response(engine_response)
             await websocket.send_json(response_payload)
 
-            logger.info(
-                f"Response sent | session={session_id} | "
-                f"intent={engine_response.intent} | "
-                f"products={len(engine_response.products)} | "
-                f"escalated={engine_response.escalated}"
+            log_decision(
+                "message_pipeline",
+                input_summary=user_message[:100],
+                chosen=engine_response.intent,
+                metadata={
+                    "products_found": len(engine_response.products),
+                    "escalated": engine_response.escalated,
+                    "total_latency_ms": round(pipeline_t.ms, 2),
+                },
             )
 
     except WebSocketDisconnect:
@@ -525,7 +560,8 @@ async def websocket_chat(
         _message_timestamps.pop(session_id, None)
         if conversation_engine:
             await conversation_engine.end_session(session_id)
-        logger.info(f"Session cleaned up | session={session_id}")
+        logger.info(f"Session cleaned up | session={session_id} | turns={turn_number}")
+        clear_context()
 
 
 # ============================================================================

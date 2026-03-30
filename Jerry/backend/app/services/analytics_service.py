@@ -13,7 +13,7 @@ from typing import Optional
 from sqlalchemy import select
 
 from app.db.engine import get_db
-from app.db.models import Store, ChatSession, SupportResolution, AttributedSale
+from app.db.models import Store, ChatSession, SupportResolution, AttributedSale, ChatInteraction
 
 logger = logging.getLogger("jerry.analytics")
 
@@ -36,8 +36,11 @@ class AnalyticsService:
         entities: dict,
         products_shown: int,
         escalated: bool,
+        turn_number: int = 0,
+        latency_ms: Optional[float] = None,
+        firewall_verdict: Optional[str] = None,
     ) -> None:
-        """Called after every message. Now also logs full interaction details."""
+        """Called after every message. Persists full interaction details for auditability."""
         try:
             async with get_db() as db:
                 store = await self._get_store(db, store_id)
@@ -45,15 +48,28 @@ class AnalyticsService:
                     return
 
                 session = await self._get_or_create_session(db, store, session_id, escalated)
+                await db.flush()  # Ensure session.id is available
 
-                # TODO: once you add ChatInteraction model, insert here:
-                # interaction = ChatInteraction(...)
-                # db.add(interaction)
+                # Persist full interaction — the audit trail
+                interaction = ChatInteraction(
+                    session_id=session.id,
+                    message=message[:500],           # truncate for privacy/storage
+                    response_text=response_text[:500] if response_text else None,
+                    intent=intent,
+                    entities=entities,
+                    products_shown=products_shown,
+                    escalated=escalated,
+                    turn_number=turn_number,
+                    latency_ms=latency_ms,
+                    firewall_verdict=firewall_verdict,
+                )
+                db.add(interaction)
 
                 await db.commit()
 
                 logger.info(
                     f"Session tracked | store={store_id} | session={session_id} | "
+                    f"turn={turn_number} | intent={intent} | "
                     f"usage={store.current_month_usage}/{store.monthly_interaction_limit} | escalated={escalated}"
                 )
 
