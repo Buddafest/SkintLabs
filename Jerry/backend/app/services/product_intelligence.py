@@ -49,6 +49,8 @@ load_dotenv()
 
 logger = logging.getLogger("sunsetbot.product_intelligence")
 
+from app.core.observability import log_decision, Timer
+
 # ---------------------------------------------------------------------------
 # Pinecone client — graceful fallback to mock mode if not installed
 # ---------------------------------------------------------------------------
@@ -209,10 +211,24 @@ class ProductIntelligence:
             logger.error("Search called but embedding model not loaded")
             return []
 
-        if self._mock_mode:
-            return await self._mock_search(query, filters, top_k)
+        with Timer() as t:
+            if self._mock_mode:
+                results = await self._mock_search(query, filters, top_k)
+            else:
+                results = await self._pinecone_search(query, store_id, filters, top_k)
 
-        return await self._pinecone_search(query, store_id, filters, top_k)
+        log_decision(
+            "product_search",
+            input_summary=query[:100],
+            metadata={
+                "results_count": len(results),
+                "top_score": round(results[0].relevance_score, 3) if results else 0,
+                "mode": "mock" if self._mock_mode else "pinecone",
+                "latency_ms": round(t.ms, 2),
+                "filters": {k: str(v) for k, v in (filters or {}).items()},
+            },
+        )
+        return results
 
     async def index_products(
         self,
@@ -480,6 +496,17 @@ class ProductIntelligence:
             product.final_score = score
 
         products.sort(key=lambda p: p.final_score, reverse=True)
+
+        if products:
+            log_decision(
+                "product_rerank",
+                metadata={
+                    "top_3": [
+                        {"title": p.title[:50], "final_score": round(p.final_score, 3), "relevance": round(p.relevance_score, 3)}
+                        for p in products[:3]
+                    ],
+                },
+            )
         return products
 
     # =========================================================================

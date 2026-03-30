@@ -45,5 +45,9 @@ ShopifyAPI>=12.6.0,<14.0
 # Billing
 stripe>=8.0.0,<10.0
 
+# Observability
+structlog>=24.0.0
+sentry-sdk[fastapi]>=2.0.0
+
 # AI Firewall (WonderwallAi SDK)
 wonderwallai[all]>=0.1.0

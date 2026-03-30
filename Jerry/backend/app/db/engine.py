@@ -121,6 +121,13 @@ async def _migrate_add_missing_columns() -> None:
         ("stores", "uninstalled_at", "TIMESTAMP"),
         # Timestamps
         ("stores", "updated_at", "TIMESTAMP DEFAULT CURRENT_TIMESTAMP"),
+        # Shopify billing (added in App Store prep)
+        ("stores", "shopify_subscription_id", "VARCHAR(255)"),
+        ("stores", "shopify_plan", "VARCHAR(50)"),
+        # ChatInteraction observability (added for intent logging)
+        ("chat_interactions", "turn_number", "INTEGER DEFAULT 0"),
+        ("chat_interactions", "latency_ms", "FLOAT"),
+        ("chat_interactions", "firewall_verdict", "VARCHAR(32)"),
     ]
 
     from sqlalchemy import text
